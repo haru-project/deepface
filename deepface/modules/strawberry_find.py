@@ -13,14 +13,17 @@ from tqdm import tqdm
 from deepface.commons.logger import Logger
 from deepface.modules import representation, detection, modeling, verification
 from deepface.models.FacialRecognition import FacialRecognition
+from deepface.extendedmodels import Gender, Race, Emotion
+
 
 logger = Logger(module="deepface/modules/recognition.py")
 
 class faceData:
-    def __init__(self, bounding_box, distance_to_match=0.0, name="Unknown"):
+    def __init__(self, bounding_box, distance_to_match=0.0, name="Unknown", analysis = {}):
         self.bounding_box = bounding_box
         self.name = name
         self.distance_to_match = distance_to_match
+        self.analysis = analysis
 
 def strawberry_find(
     img_path: Union[str, np.ndarray],
@@ -34,6 +37,8 @@ def strawberry_find(
     threshold: Optional[float] = None,
     normalization: str = "base",
     silent: bool = False,
+    actions: Union[tuple, list] = ("emotion", "gender"),
+    #actions: Union[tuple, list] = ("emotion", "age", "gender", "race"),
 ) -> List[pd.DataFrame]:
     """
     Identify individuals in a database
@@ -71,7 +76,10 @@ def strawberry_find(
             Default is base. Options: base, raw, Facenet, Facenet2018, VGGFace, VGGFace2, ArcFace
 
         silent (boolean): Suppress or allow some log messages for a quieter analysis process.
-
+        
+        actions (tuple): Attributes to analyze. The default is ('age', 'gender', 'emotion', 'race').
+            You can exclude some of these attributes from the analysis if needed.
+    
     Returns:
         results (List[pd.DataFrame]): A list of pandas dataframes. Each dataframe corresponds
             to the identity information for an individual detected in the source image.
@@ -89,6 +97,13 @@ def strawberry_find(
 
             - 'distance': Similarity score between the faces based on the
                     specified model and distance metric
+
+
+            XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+            UPDATE
+
+            XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
     """
 
     tic = time.time()
@@ -227,8 +242,9 @@ def strawberry_find(
     for source_obj in source_objs:
         source_img = source_obj["face"]
         source_region = source_obj["facial_area"]
+        source_confidence = source_obj["confidence"]
 
-        face =faceData(bounding_box=[source_region["x"],source_region["y"],source_region["w"],source_region["h"]])
+        face = faceData(bounding_box=[source_region["x"],source_region["y"],source_region["w"],source_region["h"]])
         
         target_embedding_obj = representation.represent(
             img_path=source_img,
@@ -290,8 +306,66 @@ def strawberry_find(
         result_df = result_df.sort_values(by=["distance"], ascending=True).reset_index(drop=True)
 
         if float(result_df.loc[0,"distance"]) < target_threshold:
-            face.name = result_df.iloc[0,"identity"]
-            face.distance_to_match = result_df.iloc[0,"distance"]
+            face.name = result_df.loc[0,"identity"]
+            face.distance_to_match = result_df.loc[0,"distance"]
+            
+        if source_img.shape[0] > 0 and source_img.shape[1] > 0:
+            obj = {}
+            # facial attribute analysis
+            pbar = tqdm(
+                range(0, len(actions)),
+                desc="Finding actions",
+                disable=silent if len(actions) > 1 else True,
+            )
+            for index in pbar:
+                action = actions[index]
+                pbar.set_description(f"Action: {action}")
+
+                if action == "emotion":
+                    emotion_predictions = modeling.build_model("Emotion").predict(source_img)
+                    sum_of_predictions = emotion_predictions.sum()
+
+                    obj["emotion"] = {}
+                    for i, emotion_label in enumerate(Emotion.labels):
+                        emotion_prediction = 100 * emotion_predictions[i] / sum_of_predictions
+                        obj["emotion"][emotion_label] = emotion_prediction
+
+                    obj["dominant_emotion"] = Emotion.labels[np.argmax(emotion_predictions)]
+
+                elif action == "age":
+                    apparent_age = modeling.build_model("Age").predict(source_img)
+                    # int cast is for exception - object of type 'float32' is not JSON serializable
+                    obj["age"] = int(apparent_age)
+
+                elif action == "gender":
+                    gender_predictions = modeling.build_model("Gender").predict(source_img)
+                    obj["gender"] = {}
+                    for i, gender_label in enumerate(Gender.labels):
+                        gender_prediction = 100 * gender_predictions[i]
+                        obj["gender"][gender_label] = gender_prediction
+
+                    obj["dominant_gender"] = Gender.labels[np.argmax(gender_predictions)]
+
+                elif action == "race":
+                    race_predictions = modeling.build_model("Race").predict(source_img)
+                    sum_of_predictions = race_predictions.sum()
+
+                    obj["race"] = {}
+                    for i, race_label in enumerate(Race.labels):
+                        race_prediction = 100 * race_predictions[i] / sum_of_predictions
+                        obj["race"][race_label] = race_prediction
+
+                    obj["dominant_race"] = Race.labels[np.argmax(race_predictions)]
+
+                # -----------------------------
+                # mention facial areas
+                obj["region"] = source_region
+                # include image confidence
+                obj["face_confidence"] = source_confidence
+
+                obj["face"] = source_img
+
+            face.analysis = obj
 
         resp_obj.append(result_df)
         faces.append(face)
@@ -302,7 +376,7 @@ def strawberry_find(
     if not silent:
         logger.info(f"find function lasts {toc - tic} seconds")
 
-    return resp_obj, faces
+    return faces
 
 
 def __list_images(path: str) -> list:
