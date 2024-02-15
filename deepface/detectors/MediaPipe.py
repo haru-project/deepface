@@ -26,7 +26,7 @@ class MediaPipeClient(Detector):
             ) from e
 
         mp_face_detection = mp.solutions.face_detection
-        face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.7)
+        face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.5, model_selection=1)
         return face_detection
 
     def detect_faces(
